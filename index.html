@@ -98,6 +98,7 @@ h2,h3{margin:0}
 .cnt.late{background:var(--red-bg);color:var(--red)}
 .cnt.soon{background:var(--amber-bg);color:var(--amber)}
 .cnt.mu{background:var(--sub-bg);color:var(--sub)}
+.cnt.nx{background:var(--est-bg);color:var(--est)}
 .abody{max-height:440px;overflow:auto;margin-top:6px}
 .agroup h3{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-2);margin:14px 0 4px}
 .arow{display:flex;flex-direction:column;gap:2px;width:100%;text-align:left;padding:8px;border:0;border-radius:8px;background:none;cursor:pointer}
@@ -291,7 +292,7 @@ var S={
   pedidos:[],loaded:false,dbState:'pending',db:null,unsub:null,error:null,canWrite:true,me:{id:null,name:'',email:''},
   view:'cal',month:{y:t0.getFullYear(),m:t0.getMonth()},sel:today(),
   fTipo:'',fVend:'',q:'',closed:false,
-  alertOpen:window.matchMedia?window.matchMedia('(min-width: 900px)').matches:true,
+  alertOpen:null,
   editing:null,saving:false,lastFocus:null,anularTimer:null
 };
 
@@ -328,13 +329,21 @@ function groupByDay(){
   S.pedidos.forEach(function(p){if(!visible(p))return;(by[p.fecha]=by[p.fecha]||[]).push(p)});
   return by;
 }
+function nextWeekRange(h){
+  var d=parse(h||today());
+  var a=new Date(d.getFullYear(),d.getMonth(),d.getDate()+(7-wd(d)),12);
+  var b=new Date(a.getFullYear(),a.getMonth(),a.getDate()+6,12);
+  return[iso(a),iso(b)];
+}
 function alertsData(){
-  var hoy=today();
+  var hoy=today(), rng=nextWeekRange();
   var act=S.pedidos.filter(function(p){return estadoOf(p)==='activo'});
   return{
     late:act.filter(function(p){return p.fecha<hoy}).sort(byFecha),
     soon:act.filter(function(p){var d=diff(p.fecha,hoy);return d>=0&&d<=DIAS_ALERTA}).sort(byFecha),
-    mu:act.filter(function(p){var d=diff(p.fecha,hoy);return p.tipo==='sublimado'&&d>=0&&d<=DIAS_MUESTRA&&muestraFalta(p)}).sort(byFecha)
+    mu:act.filter(function(p){return p.tipo==='sublimado'&&p.fecha>=hoy&&muestraFalta(p)}).sort(byFecha),
+    next:act.filter(function(p){return p.fecha>=rng[0]&&p.fecha<=rng[1]}).sort(byFecha),
+    rng:rng
   };
 }
 
@@ -382,17 +391,28 @@ function renderNotice(){
 }
 function renderAlerts(){
   var el=$('#alerts');
-  if(S.dbState!=='ready'||!S.loaded){el.innerHTML='';return}
-  var a=alertsData(), total=a.late.length+a.soon.length;
+  if(S.dbState!=='ready'||!S.loaded||S.error){el.innerHTML='';return}
+  var a=alertsData();
+  if(S.alertOpen===null)S.alertOpen=(window.matchMedia&&window.matchMedia('(min-width: 900px)').matches)||(a.late.length+a.soon.length>0);
   var counts='';
   if(a.late.length)counts+='<span class="cnt late">'+plural(a.late.length,'atrasado','atrasados')+'</span>';
   if(a.soon.length)counts+='<span class="cnt soon">'+a.soon.length+' por vencer</span>';
   if(a.mu.length)counts+='<span class="cnt mu">'+plural(a.mu.length,'muestra pendiente','muestras pendientes')+'</span>';
+  if(a.next.length)counts+='<span class="cnt nx">'+plural(a.next.length,'pedido','pedidos')+' la semana siguiente</span>';
   var body='';
+  if(!a.late.length&&!a.soon.length)body+='<p class="allclear">Sin atrasos ni entregas en los próximos '+DIAS_ALERTA+' días.</p>';
   if(a.late.length)body+='<div class="agroup"><h3>Atrasados</h3>'+a.late.map(function(p){var d=-diff(p.fecha,today());return alertRow(p,plural(d,'día','días')+' de atraso, entrega '+fmtD(p.fecha),'late')}).join('')+'</div>';
   if(a.soon.length)body+='<div class="agroup"><h3>Vencen en '+DIAS_ALERTA+' días o menos</h3>'+a.soon.map(function(p){var r=rel(p);return alertRow(p,r.t+', entrega '+fmtD(p.fecha),'soon')}).join('')+'</div>';
-  if(a.mu.length)body+='<div class="agroup"><h3>Sublimados con muestra sin aprobar (entrega en '+DIAS_MUESTRA+' días o menos)</h3>'+a.mu.map(function(p){return alertRow(p,muestraFalta(p)+', entrega '+fmtD(p.fecha),'')}).join('')+'</div>';
-  if(!body)body='<p class="allclear">Sin atrasos ni entregas en los próximos '+DIAS_ALERTA+' días.</p>';
+  if(a.mu.length)body+='<div class="agroup"><h3>Muestra pendiente (sublimados)</h3>'+a.mu.map(function(p){return alertRow(p,muestraFalta(p)+', entrega '+fmtD(p.fecha),'')}).join('')+'</div>';
+  var tc={};Object.keys(TIPOS).forEach(function(k){tc[k]=0});
+  a.next.forEach(function(p){if(tc[p.tipo]!=null)tc[p.tipo]++});
+  var nSum=Object.keys(TIPOS).filter(function(k){return tc[k]}).map(function(k){return tc[k]+' '+TIPOS[k].label.toLowerCase()}).join(' · ');
+  body+='<div class="agroup"><h3>Semana siguiente ('+fmtD(a.rng[0])+' al '+fmtD(a.rng[1])+')</h3>'
+    +(a.next.length
+      ?'<p class="a2" style="margin:0 8px 4px">'+plural(a.next.length,'pedido','pedidos')+(nSum?' · '+nSum:'')+'</p>'
+        +a.next.map(function(p){return alertRow(p,DOW[wd(parse(p.fecha))]+' '+fmtD(p.fecha)+' · '+((TIPOS[p.tipo]||{}).label||''),'')}).join('')
+      :'<p class="a2" style="margin:0 8px">Sin entregas comprometidas.</p>')
+    +'</div>';
   el.innerHTML='<section class="panel alerts"><details class="ad"'+(S.alertOpen?' open':'')+'><summary><h2>Requiere atención</h2>'+(counts||'<span class="muted">Todo al día</span>')+'</summary><div class="abody">'+body+'</div></details></section>';
 }
 function calHtml(){
